@@ -1,0 +1,707 @@
+local env = getgenv and getgenv() or _G
+if env.VextomLoaded then return end
+env.VextomLoaded = true
+
+task.wait(1)
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ContextActionService = game:GetService("ContextActionService")
+
+local checkcaller = checkcaller or function() return false end
+local setnamecallmethod = setnamecallmethod or function() end
+local newcc = newcclosure or function(f) return f end
+
+local ConfigFolder = "Vextom"
+local ConfigFile = ConfigFolder .. "/Config.txt"
+
+local MaxRepeats = 20
+local MinInterval = 0.03
+local MaxPower = 800
+local MaxHold = 3
+local MaxStop = 3
+
+local Config = {
+   SoruEnabled = false,
+   SoruSkill = "X",
+   SoruHold = 0,
+   SoruItem = "Blox Fruit",
+   GunBugEnabled = false,
+   GunBugStop = 0.6,
+   GunBugPower = 700,
+   SuperJumpEnabled = false,
+   SuperJumpKey = Enum.KeyCode.G,
+   AimAssistEnabled = false,
+   OptimizationEnabled = false,
+}
+
+local AllowedJumpKeys = {
+   [Enum.KeyCode.U] = true,
+   [Enum.KeyCode.I] = true,
+   [Enum.KeyCode.O] = true,
+   [Enum.KeyCode.P] = true,
+   [Enum.KeyCode.A] = true,
+   [Enum.KeyCode.S] = true,
+   [Enum.KeyCode.D] = true,
+   [Enum.KeyCode.G] = true,
+   [Enum.KeyCode.H] = true,
+   [Enum.KeyCode.K] = true,
+   [Enum.KeyCode.L] = true,
+   [Enum.KeyCode.B] = true,
+   [Enum.KeyCode.N] = true,
+   [Enum.KeyCode.M] = true,
+}
+
+local gunCooldown = false
+local soruBusy = false
+local lastConfigText = nil
+
+local setidentityFunc
+if setthreadidentity then
+   setidentityFunc = setthreadidentity
+elseif setidentity then
+   setidentityFunc = setidentity
+elseif syn and syn.set_thread_identity then
+   setidentityFunc = syn.set_thread_identity
+end
+
+local function ElevateThread()
+   if setidentityFunc then
+      pcall(setidentityFunc, 7)
+   end
+end
+
+local defaultConfig = "Soru = False, X, 0, Blox Fruit\nGun Bug = False, 0.6, 700\nSuper Jump = False, G\nAim Assist = False\nOptimization = False"
+
+local function Trim(s)
+   return s:match("^%s*(.-)%s*$")
+end
+
+local function ParseKey(str)
+   if not str then return nil end
+   local ok, key = pcall(function()
+      return Enum.KeyCode[Trim(str):upper()]
+   end)
+   return ok and key or nil
+end
+
+local function SplitParts(content)
+   local parts = {}
+   for p in (content .. ","):gmatch("([^,]*),") do
+      parts[#parts + 1] = Trim(p)
+   end
+   return parts
+end
+
+local function ReadTxtConfigs()
+   pcall(function()
+      if not isfolder(ConfigFolder) and makefolder then makefolder(ConfigFolder) end
+      if not isfile(ConfigFile) and writefile then writefile(ConfigFile, defaultConfig) end
+      if isfile(ConfigFile) and readfile then
+         local text = readfile(ConfigFile)
+         if text == lastConfigText then return end
+         lastConfigText = text
+         for line in text:gmatch("[^\r\n]+") do
+            local name, content = line:match("^([^=]+)=%s*(.-)%s*$")
+            if name and content then
+               name = Trim(name)
+               local parts = SplitParts(content)
+               local isEn = (parts[1] or ""):lower() == "true"
+
+               if name == "Soru" then
+                  Config.SoruEnabled = isEn
+                  if parts[2] and parts[2] ~= "" then Config.SoruSkill = parts[2] end
+                  local hold = tonumber(parts[3])
+                  if hold and hold >= 0 then Config.SoruHold = math.min(hold, MaxHold) end
+                  if parts[4] and parts[4] ~= "" then Config.SoruItem = parts[4] end
+               elseif name == "Gun Bug" then
+                  Config.GunBugEnabled = isEn
+                  local stop = tonumber(parts[2])
+                  local power = tonumber(parts[3])
+                  if stop and stop >= 0 then Config.GunBugStop = math.min(stop, MaxStop) end
+                  if power and power > 0 then Config.GunBugPower = math.min(power, MaxPower) end
+               elseif name == "Super Jump" then
+                  Config.SuperJumpEnabled = isEn
+                  local key = ParseKey(parts[2])
+                  if key and AllowedJumpKeys[key] then Config.SuperJumpKey = key end
+               elseif name == "Aim Assist" then Config.AimAssistEnabled = isEn
+               elseif name == "Optimization" then Config.OptimizationEnabled = isEn
+               end
+            end
+         end
+      end
+   end)
+end
+
+ReadTxtConfigs()
+task.spawn(function()
+   while task.wait(5) do
+      ReadTxtConfigs()
+   end
+end)
+
+local processedEffects = setmetatable({}, {__mode = "k"})
+local SmoothPlastic = Enum.Material.SmoothPlastic
+local PassChunk = 150
+local EffectRateScale = 0.35
+local optimizationApplied = false
+
+local KeepMaterials = {
+   [Enum.Material.Neon] = true,
+   [Enum.Material.ForceField] = true,
+   [Enum.Material.Glass] = true,
+}
+
+local function DegradeEffect(obj, class)
+   if processedEffects[obj] then return end
+   processedEffects[obj] = true
+   if class == "ParticleEmitter" then
+      if obj.Rate > 1 then
+         obj.Rate = obj.Rate * EffectRateScale
+      end
+      obj.LightEmission = 0
+   elseif class == "Beam" then
+      obj.Texture = ""
+      obj.Segments = math.min(obj.Segments, 2)
+   else
+      obj.Texture = ""
+      obj.MinLength = math.max(obj.MinLength, 2)
+   end
+end
+
+local function Optimize(obj)
+   local class = obj.ClassName
+   if class == "ParticleEmitter" or class == "Beam" or class == "Trail" then
+      DegradeEffect(obj, class)
+   elseif obj:IsA("BasePart") then
+      if class ~= "Terrain" then
+         if obj.CastShadow then
+            obj.CastShadow = false
+         end
+         if obj.Material ~= SmoothPlastic and not KeepMaterials[obj.Material] then
+            obj.Material = SmoothPlastic
+         end
+         if obj.MaterialVariant ~= "" then
+            obj.MaterialVariant = ""
+         end
+      end
+   end
+end
+
+Workspace.DescendantAdded:Connect(function(obj)
+   if Config.OptimizationEnabled then
+      task.defer(pcall, Optimize, obj)
+   end
+end)
+
+local function OptimizationPass()
+   pcall(function()
+      settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+   end)
+   pcall(function()
+      local Lighting = game:GetService("Lighting")
+      Lighting.GlobalShadows = false
+      for _, effect in ipairs(Lighting:GetChildren()) do
+         if effect:IsA("BloomEffect") or effect:IsA("BlurEffect") or effect:IsA("SunRaysEffect") or effect:IsA("DepthOfFieldEffect") then
+            effect.Enabled = false
+         end
+      end
+   end)
+   pcall(function()
+      local terrain = Workspace.Terrain
+      terrain.Decoration = false
+      terrain.WaterWaveSize = 0
+      terrain.WaterWaveSpeed = 0
+      terrain.WaterReflectance = 0
+   end)
+   local objects = Workspace:GetDescendants()
+   for i = 1, #objects do
+      if not Config.OptimizationEnabled then return end
+      pcall(Optimize, objects[i])
+      if i % PassChunk == 0 then task.wait() end
+   end
+end
+
+task.spawn(function()
+   while task.wait(2) do
+      if Config.OptimizationEnabled then
+         if not optimizationApplied then
+            optimizationApplied = true
+            task.spawn(OptimizationPass)
+         end
+      else
+         optimizationApplied = false
+      end
+   end
+end)
+
+local InjectTime = os.clock()
+local FastCleanPeriod = 60
+local FastCleanInterval = 5
+local SlowCleanInterval = 20
+
+local FXRemovePaths = {
+   {"FX2", "DracoRace", "BaseField"},
+   {"FX2", "ControlRework", "Domain"},
+}
+
+local function RemoveHeavyFX()
+   for _, path in ipairs(FXRemovePaths) do
+      pcall(function()
+         local obj = ReplicatedStorage
+         for _, name in ipairs(path) do
+            obj = obj:FindFirstChild(name)
+            if not obj then return end
+         end
+         obj:Destroy()
+      end)
+   end
+end
+
+task.spawn(function()
+   while true do
+      if Config.OptimizationEnabled then
+         RemoveHeavyFX()
+      end
+      local elapsed = os.clock() - InjectTime
+      task.wait(elapsed < FastCleanPeriod and FastCleanInterval or SlowCleanInterval)
+   end
+end)
+
+local function CheckToolTip(tool, wType)
+   if not tool or not tool:IsA("Tool") then return false end
+   local tt = tool.ToolTip
+   return (wType == "Melee" and tt == "Melee") or (wType == "Blox Fruit" and (tt == "Blox Fruit" or string.find(tool.Name, "Fruit"))) or (wType == "Sword" and tt == "Sword") or (wType == "Gun" and tt == "Gun")
+end
+
+local function GetEquippedToolByName(kw)
+   local char = LocalPlayer.Character
+   if not char then return nil end
+   local eq = char:FindFirstChildOfClass("Tool")
+   if eq and string.find(string.lower(eq.Name), string.lower(kw)) then
+      return eq
+   end
+   return nil
+end
+
+local GunKeywords = {"guitar", "bow", "kabucha"}
+
+local GunCooldowns = {
+   guitar = 1.8,
+   kabucha = 0.6,
+   bow = 1.5,
+}
+
+local function GetEquippedGunTool()
+   local char = LocalPlayer.Character
+   if not char then return nil end
+   local eq = char:FindFirstChildOfClass("Tool")
+   if not eq then return nil end
+   local lname = string.lower(eq.Name)
+   for _, kw in ipairs(GunKeywords) do
+      if string.find(lname, kw, 1, true) then
+         return eq, kw
+      end
+   end
+   return nil
+end
+
+local GunLockTime = 2.3
+local gunLockUntil = 0
+
+ContextActionService:BindActionAtPriority("VextomGunLock", function(_, state)
+   if state == Enum.UserInputState.Begin and os.clock() < gunLockUntil then
+      return Enum.ContextActionResult.Sink
+   end
+   return Enum.ContextActionResult.Pass
+end, false, Enum.ContextActionPriority.High.Value + 2000, Enum.UserInputType.MouseButton1)
+
+local function CastSkill(keyStr, hold)
+   ElevateThread()
+   local ok, k = pcall(function()
+      return Enum.KeyCode[tostring(keyStr):upper()]
+   end)
+   if not ok or not k then return end
+   VirtualInputManager:SendKeyEvent(true, k, false, game)
+   task.wait(hold and hold > 0 and hold or 0.01)
+   VirtualInputManager:SendKeyEvent(false, k, false, game)
+end
+
+local function EquipWeapon(weaponType)
+   local char = LocalPlayer.Character
+   if not char then return nil, false end
+   local humanoid = char:FindFirstChildOfClass("Humanoid")
+   if not humanoid then return nil, false end
+
+   local equipped = char:FindFirstChildOfClass("Tool")
+   if equipped and CheckToolTip(equipped, weaponType) then
+      return equipped, false
+   end
+
+   local backpack = LocalPlayer:FindFirstChild("Backpack")
+   if backpack then
+      for _, tool in ipairs(backpack:GetChildren()) do
+         if tool:IsA("Tool") and CheckToolTip(tool, weaponType) then
+            humanoid:EquipTool(tool)
+            return tool, true
+         end
+      end
+   end
+   return char:FindFirstChildOfClass("Tool"), false
+end
+
+local function GetMouseDirection()
+   local char = LocalPlayer.Character
+   local hrp = char and char:FindFirstChild("HumanoidRootPart")
+   if not hrp then return Vector3.new(0, 0, 1) end
+   local mouse = LocalPlayer:GetMouse()
+   if mouse and mouse.Hit then
+      local dir = (mouse.Hit.Position - hrp.Position)
+      if dir.Magnitude > 0.001 then return dir.Unit end
+   end
+   return hrp.CFrame.LookVector
+end
+
+local BoostMaxTime = 3
+
+local activeBoosts = {}
+local boostTokens = {}
+local activeSequences = {}
+local stopTokens = {}
+
+local boostTools = {
+   ["Gun Bug"] = GunKeywords,
+}
+
+local function RemoveBoost(name)
+   local boost = activeBoosts[name]
+   if boost then
+      pcall(function()
+         boost.lv:Destroy()
+         boost.att:Destroy()
+      end)
+      activeBoosts[name] = nil
+   end
+end
+
+local function StopBoost(name)
+   boostTokens[name] = (boostTokens[name] or 0) + 1
+   RemoveBoost(name)
+end
+
+local function StopAllBoosts()
+   for name in pairs(boostTools) do
+      StopBoost(name)
+   end
+end
+
+local function BindCharacter(char)
+   local humanoid = char:WaitForChild("Humanoid", 10)
+   if humanoid then
+      humanoid.Died:Connect(StopAllBoosts)
+   end
+   char.ChildRemoved:Connect(function(child)
+      if child:IsA("Tool") then
+         local toolName = string.lower(child.Name)
+         for name, keywords in pairs(boostTools) do
+            for _, kw in ipairs(keywords) do
+               if string.find(toolName, kw, 1, true) then
+                  StopBoost(name)
+                  break
+               end
+            end
+         end
+      end
+   end)
+end
+
+LocalPlayer.CharacterAdded:Connect(BindCharacter)
+if LocalPlayer.Character then
+   task.spawn(BindCharacter, LocalPlayer.Character)
+end
+
+local function HaltCharacter(name, token)
+   local elapsed = 0
+   while elapsed < 0.15 do
+      if boostTokens[name] ~= token or next(activeBoosts) then return end
+      local char = LocalPlayer.Character
+      local hrp = char and char:FindFirstChild("HumanoidRootPart")
+      if not hrp then return end
+      hrp.AssemblyLinearVelocity = Vector3.zero
+      hrp.AssemblyAngularVelocity = Vector3.zero
+      elapsed = elapsed + task.wait()
+   end
+end
+
+local function ScheduleStop(name, stopTime)
+   stopTokens[name] = (stopTokens[name] or 0) + 1
+   if not stopTime or stopTime <= 0 then return end
+   local token = stopTokens[name]
+   task.delay(stopTime, function()
+      if stopTokens[name] ~= token then return end
+      StopBoost(name)
+      HaltCharacter(name, boostTokens[name])
+   end)
+end
+
+local function GetLifetime(stopTime)
+   return math.max(BoostMaxTime, (stopTime or 0) + 1)
+end
+
+local function StartBoost(name, dir, power, lifetime)
+   RemoveBoost(name)
+   local char = LocalPlayer.Character
+   local hrp = char and char:FindFirstChild("HumanoidRootPart")
+   if not hrp then return end
+   local att = Instance.new("Attachment")
+   att.Parent = hrp
+   local lv = Instance.new("LinearVelocity")
+   lv.Attachment0 = att
+   lv.MaxForce = 1e6
+   lv.VectorVelocity = dir * power
+   lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+   lv.Parent = hrp
+   local boost = {lv = lv, att = att}
+   activeBoosts[name] = boost
+   task.delay(lifetime or BoostMaxTime, function()
+      if activeBoosts[name] == boost then
+         RemoveBoost(name)
+      end
+   end)
+end
+
+local function GunDash(power, stopTime)
+   local name = "Gun Bug"
+   boostTokens[name] = (boostTokens[name] or 0) + 1
+   local token = boostTokens[name]
+   ScheduleStop(name, stopTime)
+   StartBoost(name, GetMouseDirection(), power, GetLifetime(stopTime))
+   task.wait(0.2)
+   if boostTokens[name] == token then
+      RemoveBoost(name)
+   end
+end
+
+local AimDuration = 0.6
+local SoruAimDuration = 0.7
+local soruLock = nil
+local soruLockUntil = 0
+local TargetCacheTime = 0.1
+local aimUntil = 0
+local aimTool = nil
+local cachedTarget = nil
+local cachedAt = 0
+
+local aimRules = {
+   {tool = "portal", key = Enum.KeyCode.Z},
+   {tool = "control", key = Enum.KeyCode.X},
+   {tool = "lightning", key = Enum.KeyCode.C},
+   {tool = "sand", key = Enum.KeyCode.X},
+   {tool = "ice", key = Enum.KeyCode.C},
+   {tool = "dark", key = Enum.KeyCode.Z},
+   {tool = "flame", key = Enum.KeyCode.Z},
+}
+
+local function IsAlly(plr)
+   local myTeam, theirTeam = LocalPlayer.Team, plr.Team
+   if myTeam and theirTeam and myTeam == theirTeam and myTeam.Name == "Marines" then
+      return true
+   end
+   local char = plr.Character
+   if char and char:FindFirstChildOfClass("ForceField") then
+      return true
+   end
+   return false
+end
+
+local function GetNearestTarget()
+   local now = os.clock()
+   if soruLock and now < soruLockUntil then
+      local lockChar = soruLock.Parent
+      local lockHum = lockChar and lockChar:FindFirstChildOfClass("Humanoid")
+      if lockHum and lockHum.Health > 0 then
+         return soruLock
+      end
+      soruLock = nil
+   end
+   if cachedAt > 0 and now - cachedAt < TargetCacheTime and (not cachedTarget or cachedTarget.Parent) then
+      return cachedTarget
+   end
+   local char = LocalPlayer.Character
+   local hrp = char and char:FindFirstChild("HumanoidRootPart")
+   if not hrp then return nil end
+   local best, bestDist = nil, math.huge
+   for _, plr in ipairs(Players:GetPlayers()) do
+      if plr ~= LocalPlayer and plr.Character and not IsAlly(plr) then
+         local targetHrp = plr.Character:FindFirstChild("HumanoidRootPart")
+         local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+         if targetHrp and hum and hum.Health > 0 then
+            local dist = (targetHrp.Position - hrp.Position).Magnitude
+            if dist < bestDist then
+               best, bestDist = targetHrp, dist
+            end
+         end
+      end
+   end
+   cachedTarget = best
+   cachedAt = now
+   return best
+end
+
+local aimMouse = LocalPlayer:GetMouse()
+local oldMouseIndex
+
+local function InstallMouseHook()
+   if oldMouseIndex or not hookmetamethod then return end
+   oldMouseIndex = hookmetamethod(game, "__index", newcc(function(self, key)
+      if self == aimMouse and os.clock() < aimUntil and (key == "Hit" or key == "Target" or key == "UnitRay") and not checkcaller() then
+         local target = GetNearestTarget()
+         if target then
+            if key == "Hit" then
+               return CFrame.new(target.Position)
+            end
+            if key == "UnitRay" then
+               local ray = oldMouseIndex(self, "UnitRay")
+               return Ray.new(ray.Origin, (target.Position - ray.Origin).Unit)
+            end
+            return target
+         end
+      end
+      return oldMouseIndex(self, key)
+   end))
+end
+
+ContextActionService:BindActionAtPriority("VextomAimTrack", function(_, state, input)
+   if state == Enum.UserInputState.Begin and Config.AimAssistEnabled then
+      for _, rule in ipairs(aimRules) do
+         if input.KeyCode == rule.key then
+            local tool = GetEquippedToolByName(rule.tool)
+            if tool then
+               InstallMouseHook()
+               aimTool = tool
+               cachedAt = 0
+               aimUntil = os.clock() + AimDuration
+            end
+            break
+         end
+      end
+   end
+   return Enum.ContextActionResult.Pass
+end, false, Enum.ContextActionPriority.High.Value + 999, Enum.KeyCode.Z, Enum.KeyCode.X)
+
+local SoruKey = Enum.KeyCode.R
+local SoruRange = 150
+
+ContextActionService:BindActionAtPriority("VextomSoruAim", function(_, state)
+   if state == Enum.UserInputState.Begin and Config.SoruEnabled then
+      local char = LocalPlayer.Character
+      local hrp = char and char:FindFirstChild("HumanoidRootPart")
+      cachedAt = 0
+      local target = hrp and GetNearestTarget()
+      if target and (target.Position - hrp.Position).Magnitude <= SoruRange then
+         InstallMouseHook()
+         aimUntil = math.max(aimUntil, os.clock() + SoruAimDuration)
+         soruLock = target
+         soruLockUntil = os.clock() + SoruAimDuration
+      end
+   end
+   return Enum.ContextActionResult.Pass
+end, false, Enum.ContextActionPriority.High.Value + 1001, SoruKey)
+
+local oldNamecall
+if hookmetamethod and getnamecallmethod then
+   oldNamecall = hookmetamethod(game, "__namecall", newcc(function(self, ...)
+      local method = getnamecallmethod()
+
+      if method == "Emit" and Config.OptimizationEnabled and not checkcaller() then
+         local count = ...
+         if type(count) == "number" and count > 1 then
+            return oldNamecall(self, math.max(1, math.floor(count * EffectRateScale)))
+         end
+      end
+
+      if method ~= "FireServer" then
+         return oldNamecall(self, ...)
+      end
+
+      local name = self.Name
+      local first = ...
+
+      local soruArgs, soruCount
+      if name == "CommE" and first == "Soru" and Config.SoruEnabled then
+         local soruTarget = GetNearestTarget()
+         if soruTarget and os.clock() < aimUntil then
+            local second = select(2, ...)
+            if typeof(second) == "Vector3" then
+               soruArgs = {...}
+               soruArgs[2] = soruTarget.Position
+               soruCount = select("#", ...)
+            end
+         end
+         local skillKey = ParseKey(tostring(Config.SoruSkill))
+         if not soruBusy and skillKey and skillKey ~= SoruKey then
+            soruBusy = true
+            setnamecallmethod(method)
+            task.spawn(function()
+               pcall(function()
+                  ElevateThread()
+                  local tool, justEquipped = EquipWeapon(Config.SoruItem)
+                  if justEquipped or tool then
+                     task.wait(0.05)
+                  end
+                  task.wait(0)
+                  CastSkill(Config.SoruSkill, Config.SoruHold)
+               end)
+               task.wait(0.25)
+               soruBusy = false
+            end)
+         end
+         if soruArgs then
+            return oldNamecall(self, table.unpack(soruArgs, 1, soruCount))
+         end
+      end
+
+      if aimTool and os.clock() < aimUntil and self.Parent == aimTool and typeof(first) == "Vector3" then
+         local target = GetNearestTarget()
+         if target then
+            local count = select("#", ...)
+            local args = {...}
+            args[1] = target.Position
+            setnamecallmethod(method)
+            return oldNamecall(self, table.unpack(args, 1, count))
+         end
+      end
+
+      return oldNamecall(self, ...)
+   end))
+end
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+   if gpe then return end
+if input.UserInputType == Enum.UserInputType.MouseButton1 then
+   if Config.GunBugEnabled and not gunCooldown and os.clock() >= gunLockUntil then
+      local tool, kw = GetEquippedGunTool()
+      if tool then
+         gunCooldown = true
+         gunLockUntil = os.clock() + GunLockTime
+         task.delay(GunCooldowns[kw] or 1.8, function() gunCooldown = false end)
+         task.spawn(GunDash, Config.GunBugPower, Config.GunBugStop)
+      end
+   end
+elseif input.UserInputType == Enum.UserInputType.Keyboard then
+      if Config.SuperJumpEnabled and input.KeyCode == Config.SuperJumpKey then
+         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+         if hrp then
+            local att = Instance.new("Attachment")
+            att.Parent = hrp
+            local lv = Instance.new("LinearVelocity")
+            lv.MaxForce, lv.VectorVelocity, lv.Attachment0, lv.Parent = 1e6, Vector3.new(0, 300, 0), att, hrp
+            task.delay(0.15, function() lv:Destroy() att:Destroy() end)
+         end
+      end
+   end
+end)
