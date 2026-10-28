@@ -497,13 +497,11 @@ local cachedTarget = nil
 local cachedAt = 0
 
 local aimRules = {
-   {tool = "portal", key = Enum.KeyCode.Z},
    {tool = "control", key = Enum.KeyCode.X},
-   {tool = "lightning", key = Enum.KeyCode.C},
-   {tool = "sand", key = Enum.KeyCode.X},
-   {tool = "ice", key = Enum.KeyCode.C},
+   {tool = "portal", key = Enum.KeyCode.Z},
    {tool = "dark", key = Enum.KeyCode.Z},
-   {tool = "flame", key = Enum.KeyCode.Z},
+   {tool = "ice", key = Enum.KeyCode.C},
+   {tool = "sand", key = Enum.KeyCode.X},
 }
 
 local function IsAlly(plr)
@@ -591,7 +589,7 @@ ContextActionService:BindActionAtPriority("VextomAimTrack", function(_, state, i
       end
    end
    return Enum.ContextActionResult.Pass
-end, false, Enum.ContextActionPriority.High.Value + 999, Enum.KeyCode.Z, Enum.KeyCode.X)
+end, false, Enum.ContextActionPriority.High.Value + 999, Enum.KeyCode.Z, Enum.KeyCode.X, Enum.KeyCode.C)
 
 local SoruKey = Enum.KeyCode.R
 local SoruRange = 150
